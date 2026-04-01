@@ -1,0 +1,25 @@
+{
+    "putty": {
+        "cale": "C:\\vifout\\Putty\\putty.exe",
+        "sesiune": "srvvif57",
+        "titlu_fereastra": "VIF5_7"
+    },
+    "fisiere": {
+        "csv": "data\\of_articole.csv",
+        "filtre": "data\\filtre.txt",
+        "progress": "data\\progress_putty.txt",
+        "failed": "data\\failed.csv",
+        "log": "data\\log.txt",
+        "screenshots": "data\\screenshots"
+    },
+    "viteza": {
+        "interval_tastare": 0.13,
+        "pauza_dupa_tasta": 0.9,
+        "pauza_citire_ecran": 0.8,
+        "interval_scanare": 0.4
+    },
+    "limite": {
+        "articole_per_sesiune": 0,
+        "timeout_articol": 60
+    }
+}
