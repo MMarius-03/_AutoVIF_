@@ -205,3 +205,13 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# AutoOF local/runtime files
+.idea/
+Python 3.13/
+data/log.txt
+data/progress_putty.txt
+data/failed.csv
+data/screenshots/
+config.local.json
+*.local.json

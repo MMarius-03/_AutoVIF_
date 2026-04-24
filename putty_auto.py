@@ -1,3 +1,4 @@
+import argparse
 import csv
 import io
 import json
@@ -8,24 +9,24 @@ import subprocess
 import threading
 import time
 import traceback
-import pyperclip
-import keyboard
 import ctypes
 import tkinter as tk
 from tkinter import ttk
 from datetime import datetime
-from pywinauto import Application
-
-try:
-    import pyautogui
-    SCREENSHOT_OK = True
-except:
-    SCREENSHOT_OK = False
 
 # ======================================================
 # INCARCARE CONFIG DIN config.json
 # ======================================================
-_CONFIG_FILE = "config.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+
+
+def _cale_din_config(cale):
+    if os.path.isabs(cale):
+        return cale
+    return os.path.join(BASE_DIR, cale)
+
+
 try:
     with open(_CONFIG_FILE, encoding="utf-8") as _f:
         _CFG = json.load(_f)
@@ -44,17 +45,17 @@ except json.JSONDecodeError as _e:
     sys.exit()
 
 # Putty
-CALE_PUTTY      = _CFG["putty"]["cale"]
+CALE_PUTTY      = _cale_din_config(_CFG["putty"]["cale"])
 SESIUNE_PUTTY   = _CFG["putty"]["sesiune"]
 TITLU_PUTTY     = _CFG["putty"]["titlu_fereastra"]
 
 # Fisiere
-CALE_CSV        = _CFG["fisiere"]["csv"]
-CALE_FILTRE     = _CFG["fisiere"]["filtre"]
-CALE_PROGRESS   = _CFG["fisiere"]["progress"]
-CALE_FAILED     = _CFG["fisiere"]["failed"]
-LOG_FILE        = _CFG["fisiere"]["log"]
-SCREENSHOT_DIR  = _CFG["fisiere"]["screenshots"]
+CALE_CSV        = _cale_din_config(_CFG["fisiere"]["csv"])
+CALE_FILTRE     = _cale_din_config(_CFG["fisiere"]["filtre"])
+CALE_PROGRESS   = _cale_din_config(_CFG["fisiere"]["progress"])
+CALE_FAILED     = _cale_din_config(_CFG["fisiere"]["failed"])
+LOG_FILE        = _cale_din_config(_CFG["fisiere"]["log"])
+SCREENSHOT_DIR  = _cale_din_config(_CFG["fisiere"]["screenshots"])
 
 # Viteza
 INTERVAL_TASTARE   = _CFG["viteza"]["interval_tastare"]
@@ -76,6 +77,9 @@ class Logger:
     def __init__(self, log_file, screenshot_dir):
         self.log_file = log_file
         self.screenshot_dir = screenshot_dir
+        log_dir = os.path.dirname(log_file)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
         os.makedirs(screenshot_dir, exist_ok=True)
 
     def log(self, mesaj, idx=None):
@@ -86,14 +90,14 @@ class Logger:
             f.write(linie + "\n")
 
     def screenshot(self, nume="eroare"):
-        if SCREENSHOT_OK:
-            try:
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                cale = os.path.join(self.screenshot_dir, f"{nume}_{ts}.png")
-                pyautogui.screenshot(cale)
-                self.log(f"Screenshot: {cale}")
-            except:
-                pass
+        try:
+            import pyautogui
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            cale = os.path.join(self.screenshot_dir, f"{nume}_{ts}.png")
+            pyautogui.screenshot(cale)
+            self.log(f"Screenshot: {cale}")
+        except:
+            pass
 
 
 # ======================================================
@@ -206,6 +210,8 @@ class PuttyController:
         self.app        = None
 
     def deschide(self):
+        from pywinauto import Application
+
         self.logger.log("Deschid PuTTY...")
         subprocess.Popen([self.cale_putty, "-load", self.sesiune])
         time.sleep(4.5)
@@ -230,8 +236,7 @@ class PuttyController:
 
     def exista(self):
         try:
-            self.app.window(title=self.titlu).exists()
-            return True
+            return bool(self.app and self.app.window(title=self.titlu).exists(timeout=0.5))
         except:
             return False
 
@@ -248,6 +253,8 @@ class PuttyController:
         time.sleep(pauza)
 
     def citeste_ecran(self):
+        import pyperclip
+
         pyperclip.copy('')
         self.get().type_keys("%{SPACE}o")
         time.sleep(PAUZA_CITIRE_ECRAN)
@@ -318,6 +325,12 @@ class OFAutomation:
     # -------------------------------------------------------
     def start_listener(self):
         def _listen():
+            try:
+                import keyboard
+            except Exception as e:
+                self.logger.log(f"Listener tastatura indisponibil: {e}")
+                return
+
             while not self.stop_flag.is_set():
                 if keyboard.is_pressed("esc") or keyboard.is_pressed("f1"):
                     self.stop_flag.set()
@@ -338,6 +351,14 @@ class OFAutomation:
     def verifica_stop(self, idx):
         if self.stop_flag.is_set():
             self.opreste(idx, "Oprit manual (ESC sau F1)")
+
+    @staticmethod
+    def timeout_ramas(deadline):
+        return max(0.1, deadline - time.monotonic())
+
+    @staticmethod
+    def timeout_expirat(deadline):
+        return time.monotonic() >= deadline
 
     # -------------------------------------------------------
     # Error recovery dialog
@@ -383,6 +404,22 @@ class OFAutomation:
     # -------------------------------------------------------
     # Selectie coloane CSV
     # -------------------------------------------------------
+    def detecteaza_coloane_implicite(self):
+        col_art = None
+        col_cant = None
+
+        for c in self.csv_reader.coloane:
+            if "articol" in c.lower() or "cod" in c.lower():
+                col_art = c
+                break
+
+        for c in self.csv_reader.coloane:
+            if any(x in c.lower() for x in ["cant", "ctq", "cte", "qty"]):
+                col_cant = c
+                break
+
+        return col_art, col_cant
+
     def selectie_coloane(self):
         col_art  = [None]
         col_cant = [None]
@@ -420,12 +457,13 @@ class OFAutomation:
         combo_c = ttk.Combobox(frame_sel, values=self.csv_reader.coloane, state="readonly", width=25)
         combo_c.grid(row=1, column=1, padx=10)
 
-        for c in self.csv_reader.coloane:
-            if "articol" in c.lower() or "cod" in c.lower():
-                combo_a.set(c); col_art[0] = c; break
-        for c in self.csv_reader.coloane:
-            if any(x in c.lower() for x in ["cant", "ctq", "cte", "qty"]):
-                combo_c.set(c); col_cant[0] = c; break
+        implicit_art, implicit_cant = self.detecteaza_coloane_implicite()
+        if implicit_art:
+            combo_a.set(implicit_art)
+            col_art[0] = implicit_art
+        if implicit_cant:
+            combo_c.set(implicit_cant)
+            col_cant[0] = implicit_cant
 
         combo_a.bind("<<ComboboxSelected>>", lambda e: col_art.__setitem__(0, combo_a.get()))
         combo_c.bind("<<ComboboxSelected>>", lambda e: col_cant.__setitem__(0, combo_c.get()))
@@ -492,6 +530,52 @@ class OFAutomation:
         return confirmat[0]
 
     # -------------------------------------------------------
+    # Citire filtre
+    # -------------------------------------------------------
+    def citeste_filtre(self):
+        try:
+            with open(CALE_FILTRE, encoding="utf-8") as f:
+                return [l.strip() for l in f if l.strip()]
+        except FileNotFoundError:
+            return []
+
+    # -------------------------------------------------------
+    # Dry-run CSV fara PuTTY/VIF
+    # -------------------------------------------------------
+    def dry_run_csv(self, col_articol=None, col_cantitate=None):
+        if not self.csv_reader.gaseste_header():
+            print("DRY-RUN ESUAT: Nu am gasit headerul in CSV.")
+            return 1
+
+        implicit_art, implicit_cant = self.detecteaza_coloane_implicite()
+        col_articol = col_articol or implicit_art
+        col_cantitate = col_cantitate or implicit_cant
+
+        coloane = self.csv_reader.coloane or []
+        if col_articol not in coloane or col_cantitate not in coloane:
+            print("DRY-RUN ESUAT: Coloanele nu au fost detectate corect.")
+            print("Coloane disponibile: " + ", ".join(coloane))
+            print(f"Articol: {col_articol!r}; Cantitate: {col_cantitate!r}")
+            return 1
+
+        filtre = self.citeste_filtre()
+        articole = self.csv_reader.citeste(col_articol, col_cantitate, filtre)
+        articole_sesiune = articole[:ARTICOLE_PER_SESIUNE] if ARTICOLE_PER_SESIUNE > 0 else articole
+
+        print("DRY-RUN CSV OK")
+        print(f"CSV: {CALE_CSV}")
+        print(f"Header gasit la linia: {self.csv_reader.header_idx + 1}")
+        print(f"Coloana articol: {col_articol}")
+        print(f"Coloana cantitate: {col_cantitate}")
+        print(f"Filtre incarcate: {len(filtre)}")
+        print(f"Articole dupa filtrare: {len(articole)}")
+        print(f"Articole pentru sesiunea curenta: {len(articole_sesiune)}")
+        print("Primele articole:")
+        for idx, (cod, cant) in enumerate(articole_sesiune[:10], start=1):
+            print(f"{idx:>3}. {cod} -> {cant}")
+        return 0
+
+    # -------------------------------------------------------
     # Navigare initiala la p04a
     # -------------------------------------------------------
     def navigare_initiala(self):
@@ -530,29 +614,42 @@ class OFAutomation:
     # Introducere un articol
     # -------------------------------------------------------
     def introduce_articol(self, i, cod, cant):
+        deadline = time.monotonic() + TIMEOUT_ARTICOL
+
+        def timeout(optional_max=None):
+            ramas = self.timeout_ramas(deadline)
+            if optional_max is not None:
+                return min(optional_max, ramas)
+            return ramas
+
+        def esec(motiv):
+            if self.timeout_expirat(deadline):
+                return False, f"Timeout articol depasit ({TIMEOUT_ARTICOL}s): {motiv}"
+            return False, motiv
+
         self.putty.apasa("^o")
-        if not self.putty.asteapta_text("CREAREA UNUI OF", timeout=10, idx=i):
-            return False, "Ecranul CREAREA UNUI OF nu s-a incarcat"
+        if not self.putty.asteapta_text("CREAREA UNUI OF", timeout=timeout(), idx=i):
+            return esec("Ecranul CREAREA UNUI OF nu s-a incarcat")
 
         self.putty.scrie(cod)
         self.putty.apasa("{ENTER}")
 
-        if not self.putty.asteapta_text(cod, timeout=10, idx=i):
-            return False, f"Articolul {cod} nu a fost recunoscut de server"
+        if not self.putty.asteapta_text(cod, timeout=timeout(), idx=i):
+            return esec(f"Articolul {cod} nu a fost recunoscut de server")
 
         self.putty.scrie(cant)
         self.putty.apasa("{ENTER}")
         self.putty.apasa("{F2}")
 
-        if not self.putty.asteapta_text("INTROD CANTITATILOR DE INTRARE", timeout=15, idx=i):
-            return False, "Salvarea OF a esuat"
+        if not self.putty.asteapta_text("INTROD CANTITATILOR DE INTRARE", timeout=timeout(), idx=i):
+            return esec("Salvarea OF a esuat")
 
         self.putty.apasa("{F4}")
-        if self.putty.asteapta_text("Sunteti sigur", timeout=5):
+        if self.putty.asteapta_text("Sunteti sigur", timeout=timeout(5)):
             self.putty.apasa("{ENTER}")
 
-        if not self.putty.asteapta_text("CTRL-O=Nou OF", timeout=10, idx=i):
-            return False, "Nu s-a revenit la SELECTIE OF"
+        if not self.putty.asteapta_text("CTRL-O=Nou OF", timeout=timeout(), idx=i):
+            return esec("Nu s-a revenit la SELECTIE OF")
 
         return True, None
 
@@ -651,12 +748,7 @@ class OFAutomation:
         self.logger.log(f"Coloane: Articol='{col_art}', Cantitate='{col_cant}'")
 
         # Citire filtre
-        filtre = []
-        try:
-            with open(CALE_FILTRE, encoding="utf-8") as f:
-                filtre = [l.strip() for l in f if l.strip()]
-        except FileNotFoundError:
-            pass
+        filtre = self.citeste_filtre()
 
         self.articole = self.csv_reader.citeste(col_art, col_cant, filtre)
 
@@ -693,5 +785,52 @@ class OFAutomation:
 # ======================================================
 # ENTRY POINT
 # ======================================================
+def ruleaza_self_test():
+    teste = [
+        ("curata", '="12345"', CSVReader.curata, "12345"),
+        ("curata", '"ABC"', CSVReader.curata, "ABC"),
+        ("cantitate", "6.000 Kg", CSVReader.converteste_cantitate, "6"),
+        ("cantitate", "6,500", CSVReader.converteste_cantitate, "6,5"),
+        ("cantitate", "12", CSVReader.converteste_cantitate, "12"),
+        ("cantitate", "", CSVReader.converteste_cantitate, "0"),
+    ]
+
+    erori = []
+    for nume, valoare, functie, asteptat in teste:
+        primit = functie(valoare)
+        if primit != asteptat:
+            erori.append(f"{nume}({valoare!r}) -> {primit!r}, asteptat {asteptat!r}")
+
+    if erori:
+        print("SELF-TEST ESUAT")
+        for eroare in erori:
+            print(f"- {eroare}")
+        return 1
+
+    print("SELF-TEST OK: curatare si conversie cantitati.")
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="AutoOF - automatizare introducere OF prin PuTTY")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="valideaza CSV/filtre si afiseaza articolele fara a deschide PuTTY")
+    parser.add_argument("--self-test", action="store_true",
+                        help="ruleaza teste minimale pentru curatare CSV si conversie cantitati")
+    parser.add_argument("--col-articol", help="coloana CSV pentru cod articol in dry-run")
+    parser.add_argument("--col-cantitate", help="coloana CSV pentru cantitate in dry-run")
+    args = parser.parse_args(argv)
+
+    if args.self_test:
+        return ruleaza_self_test()
+
+    app = OFAutomation()
+    if args.dry_run:
+        return app.dry_run_csv(args.col_articol, args.col_cantitate)
+
+    app.run()
+    return 0
+
+
 if __name__ == "__main__":
-    OFAutomation().run()
+    sys.exit(main())
